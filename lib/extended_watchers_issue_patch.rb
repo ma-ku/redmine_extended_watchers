@@ -12,11 +12,18 @@ module ExtendedWatchersIssuePatch
 
         base.instance_eval do
           def visible_condition(user, options={})
+
+            watched_issues = []
+            if user.logged?
+              user_ids = [user.id] + user.groups.map(&:id)
+              watched_issues = Issue.watched_by(user).map(&:id)
+            end
+
+            watched_issues_clause = watched_issues.empty? ? "" : " OR #{table_name}.id IN (#{watched_issues.join(',')})"
+
             Project.allowed_to_condition(user, :view_issues, options) do |role, user|
               # Keep the code DRY
               if [ 'default', 'own' ].include?(role.issues_visibility)
-                user_ids = [user.id] + user.groups.map(&:id)
-                watched_issues = Issue.watched_by(user).map(&:id)
                 watched_issues_clause = watched_issues.empty? ? "" : " OR #{table_name}.id IN (#{watched_issues.join(',')})"
               end
 
@@ -34,7 +41,7 @@ module ExtendedWatchersIssuePatch
               else
                 "(#{table_name}.is_private = #{connection.quoted_false})"
               end
-            end
+            end + "#{watched_issues_clause} "
             
           end
         end
@@ -42,7 +49,7 @@ module ExtendedWatchersIssuePatch
 
     module InstanceMethods
         def visible_with_extwatch?(usr=nil)
-          (usr || User.current).allowed_to?(:view_issues, self.project) do |role, user|
+          visible = (usr || User.current).allowed_to?(:view_issues, self.project) do |role, user|
             if user.logged?
               case role.issues_visibility
               when 'all'
@@ -58,6 +65,13 @@ module ExtendedWatchersIssuePatch
               visible_without_extwatch?(usr)
             end
           end
+ 
+          if !visible && (usr || User.current).logged?
+	    visible = self.watched_by?(usr || User.current)
+          end
+
+          logger.error "visible_with_extwatch #{visible}"
+          visible
         end
 
         # Override the acts_as_watchble default to allow any user with view issues
